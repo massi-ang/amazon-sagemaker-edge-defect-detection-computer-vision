@@ -28,7 +28,7 @@ if not 'SM_APP_ENV' in os.environ:
 
 # Configuration constants
 SM_EDGE_AGENT_HOME = os.environ['SM_EDGE_AGENT_HOME']
-AGENT_SOCKET = '/tmp/edge_agent'
+AGENT_SOCKET = os.environ.get('SM_AGENT_SOCKET', '/tmp/aws.greengrass.SageMakerEdgeManager.sock')
 SM_EDGE_MODEL_PATH = os.path.join(SM_EDGE_AGENT_HOME, 'model/dev')
 SM_EDGE_CONFIGFILE_PATH = os.path.join(SM_EDGE_AGENT_HOME, 'conf/config_edge_device.json')
 CONFIG_FILE_PATH = './models_config.json'
@@ -41,25 +41,25 @@ logging.basicConfig(level=logging.INFO)
 logging.debug('Initializing...')
 
 # Loading config file
-with open(CONFIG_FILE_PATH, 'r') as f:
-    config = json.load(f)
+# with open(CONFIG_FILE_PATH, 'r') as f:
+#     config = json.load(f)
 
 # Load SM Edge Agent config file
-iot_params = json.loads(open(SM_EDGE_CONFIGFILE_PATH, 'r').read())
+#iot_params = json.loads(open(SM_EDGE_CONFIGFILE_PATH, 'r').read())
 
 # Retrieve the IoT thing name associated with the edge device
-iot_client = app.get_client('iot', iot_params)
-sm_client = app.get_client('sagemaker', iot_params)
-resp = sm_client.describe_device(
-    DeviceName=iot_params['sagemaker_edge_core_device_name'],
-    DeviceFleetName=iot_params['sagemaker_edge_core_device_fleet_name']
-)
-device_name = resp['IotThingName']
-mqtt_host=iot_client.describe_endpoint(endpointType='iot:Data-ATS')['endpointAddress']
-mqtt_port=8883
+# iot_client = app.get_client('iot', iot_params)
+# sm_client = app.get_client('sagemaker', iot_params)
+# resp = sm_client.describe_device(
+#     DeviceName=iot_params['sagemaker_edge_core_device_name'],
+#     DeviceFleetName=iot_params['sagemaker_edge_core_device_fleet_name']
+# )
+# device_name = resp['IotThingName']
+# mqtt_host=iot_client.describe_endpoint(endpointType='iot:Data-ATS')['endpointAddress']
+# mqtt_port=8883
 
 # Send logs to cloud via MQTT topics
-logger = app.Logger(device_name, iot_params)
+logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT'))
 
 # Initialize the Edge Manager agent
 edge_agent = app.EdgeAgentClient(AGENT_SOCKET)

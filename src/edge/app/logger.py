@@ -17,8 +17,6 @@ class Logger(object):
         logging.info("Device Name: %s" % self.device_name)
         self.iot_params = iot_params
 
-        self.__update_credentials()
-
         self.logs_buffer = []
         self.__log_lock = threading.Lock()
 
@@ -26,8 +24,8 @@ class Logger(object):
         '''
             Get new temp credentials
         '''
-        logging.info("Getting the IoT Credentials")
-        self.iot_data_client = util.get_client('iot-data', self.iot_params)
+        logging.info("Getting the IoT client")
+        self.iot_data_client = util.get_client('iot-data', {"endpoint_url":self.iot_params})
 
     def __run_logs_upload_job__(self):        
         '''
