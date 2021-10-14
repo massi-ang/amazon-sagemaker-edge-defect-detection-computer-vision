@@ -4,8 +4,8 @@
 
 import grpc
 import logging
-import app.agent_pb2 as agent
-import app.agent_pb2_grpc as agent_grpc
+import agent_pb2  as agent
+import agent_pb2_grpc as agent_grpc
 import struct
 import numpy as np
 import uuid
@@ -116,10 +116,6 @@ class EdgeAgentClient(object):
     def unload_model(self, model_name):
         """ UnLoad model from the Edge Agent"""
         try:
-            if not self.is_model_loaded(model_name):
-                logging.info( "Model %s was not loaded" % model_name )
-                return self.model_map
-
             req = agent.UnLoadModelRequest()
             req.name = model_name
             resp = self.agent.UnLoadModel(req)
@@ -127,4 +123,4 @@ class EdgeAgentClient(object):
             return self.__update_models_list__()
         except Exception as e:
             logging.error('Error in unload_model: %s' % e)
-            return None
+            return self.__update_models_list__()
