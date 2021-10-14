@@ -208,7 +208,7 @@ class ModelMonitor(object):
             for m in previous_models.keys():
                 logging.info(f'Unloading model {m}')
                 edge_agent.unload_model(m)
-                self.models_loaded = [x in self.models_loaded if x['identifier'] != m]
+                self.models_loaded = [x for x in self.models_loaded if x['identifier'] != m ]
 
     def unload_all(self):
         for m in self.models_loaded:
