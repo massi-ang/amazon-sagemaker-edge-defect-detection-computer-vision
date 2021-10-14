@@ -9,10 +9,11 @@ import glob
 import random
 import re
 from timeit import default_timer as timer
-
+from threading import Thread, Event
 from flask import Flask
 from flask import render_template
 from waitress import serve
+import time
 
 flask_app = Flask(__name__)
 
@@ -36,28 +37,12 @@ logging.debug('Initializing...')
 with open(CONFIG_FILE_PATH, 'r') as f:
     config = json.load(f)
 
-# Load SM Edge Agent config file
-#iot_params = json.loads(open(SM_EDGE_CONFIGFILE_PATH, 'r').read())
-
-# Retrieve the IoT thing name associated with the edge device
-# iot_client = app.get_client('iot', iot_params)
-# sm_client = app.get_client('sagemaker', iot_params)
-# resp = sm_client.describe_device(
-#     DeviceName=iot_params['sagemaker_edge_core_device_name'],
-#     DeviceFleetName=iot_params['sagemaker_edge_core_device_fleet_name']
-# )
-# device_name = resp['IotThingName']
-# mqtt_host=iot_client.describe_endpoint(endpointType='iot:Data-ATS')['endpointAddress']
-# mqtt_port=8883
-
 # Send logs to cloud via MQTT topics
 logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT', 'https://acwprzq1nws9h-ats.iot.eu-west-1.amazonaws.com' ), 1)
 
 # Initialize the Edge Manager agent
 edge_agent = app.EdgeAgentClient(AGENT_SOCKET)
 
-# A list of names of loaded models with their name, version and identifier
-models_loaded = []
 
 def create_model_identifier(name, version):
     """Get a compatible string as a combination of name and version"""
@@ -96,45 +81,19 @@ def preprocess_image(img, img_width, img_height):
     x_transposed = x.transpose((2,0,1))
     x_batchified = np.expand_dims(x_transposed, axis=0)
     return x_batchified
-
-# Setup model callback method
-def load_model(path):
-    with open(os.path.join(path, 'sagemaker_edge_manifest')) as f:
-        model_meta = json.loads(f.read())['metadata']
-    
-    logging.info(f'Loading model {model_meta}')
-    """Loads the model into the edge agent and unloads previous versions if any."""
-    # Create a model name string as a concatenation of name and version
-    identifier = "%s-%s" % (model_meta['model_name'], model_meta['model_version'])
-    previous_models = edge_agent.unload_model(identifier)
-    
-   
-    resp = edge_agent.load_model(identifier, path)
-    
-    if resp is None:
-        logging.error('It was not possible to load the model. Is the agent running?')
-        return
-    else:
-        logging.info('Sucessfully loaded new model version into agent')
-        models_loaded.append({'name':model_meta['model_name'], 'version':model_meta['model_version'], 'identifier':identifier})
-        logging.info('Unloading previous models')
-        for m in previous_models.keys():
-            logging.info(f'Unloading model {m}')
-            edge_agent.unload_model(m)
-            
        
 def run_segmentation_inference(agent, filename):
     """Runs inference on the given image file. Returns prediction and model latency."""
 
     # Check if model for segmentation is downloaded
     model_name_img_seg = config['mappings']['image-segmentation-app']
-    model_is_loaded = any([m['name']==model_name_img_seg for m in models_loaded])
+    model_is_loaded = any([m['name']==model_name_img_seg for m in model_monitor.models_loaded])
     if not model_is_loaded:
         logging.info('Model for image segmentation not loaded, waiting for deployment...')
         return None, None
 
     # Get the identifier of the currently loaded model
-    model_dict_img_seg = next((x for x in models_loaded if x['name'] == model_name_img_seg), None)
+    model_dict_img_seg = next((x for x in model_monitor.models_loaded if x['name'] == model_name_img_seg), None)
     if not model_dict_img_seg:
         logging.info('Model for image segmentation not loaded, waiting for deployment...')
         return None, None
@@ -167,13 +126,13 @@ def run_classification_inference(agent, filename):
     # Check if the model for image classification is available
     # The application always uses the latest version of the model in the list of loaded models
     model_name_img_clf = config['mappings']['image-classification-app']
-    model_is_loaded = any([m['name']==model_name_img_clf for m in models_loaded])
+    model_is_loaded = any([m['name']==model_name_img_clf for m in model_monitor.models_loaded])
     if not model_is_loaded:
         logging.info('Model for image classification not loaded, waiting for deployment...')
         return None, None
 
     # Get the identifier of the currently loaded model
-    model_dict_img_clf = next((x for x in models_loaded if x['name'] == model_name_img_clf), None)
+    model_dict_img_clf = next((x for x in model_monitor.models_loaded if x['name'] == model_name_img_clf), None)
     if not model_dict_img_clf:
         logging.info('Model for image classification not loaded, waiting for deployment...')
         return None, None
@@ -206,7 +165,62 @@ def run_classification_inference(agent, filename):
 # Get list of supported model names
 models_supported = config['mappings'].values()
 
-load_model('/greengrass/v2/work/aws.example.model.defect_detection')
+class ModelMonitor(object):
+    def __init__(self, path):
+        self.path = path
+        self.m = Thread(target=self.monitor)
+        self.m.start()
+        self.current_version = 0
+        self.models_loaded=[]
+
+    def get_model_meta(self):
+        with open(os.path.join(self.path, 'sagemaker_edge_manifest')) as f:
+            model_meta = json.loads(f.read())['metadata']
+        return model_meta
+
+    def monitor(self):
+        while True:
+            meta = self.get_model_meta()
+            if int(meta['model_version']) > self.current_version:
+                self.load_model()
+            time.sleep(1)
+    
+    def load_model(self):
+        logging.info('New model version detected. Loading...')
+
+        model_meta = self.get_model_meta()
+        
+        logging.info(f'Loading model {model_meta}')
+        """Loads the model into the edge agent and unloads previous versions if any."""
+        # Create a model name string as a concatenation of name and version
+        identifier = "%s-%s" % (model_meta['model_name'], model_meta['model_version'])
+        previous_models = edge_agent.unload_model(identifier)
+        resp = edge_agent.load_model(identifier, self.path)
+        
+        if resp is None:
+            logging.error('It was not possible to load the model. Is the agent running?')
+            return
+        else:
+            logging.info('Sucessfully loaded new model version into agent')
+            self.models_loaded.append({'name':model_meta['model_name'], 'version':model_meta['model_version'], 'identifier':identifier})
+            self.current_version = int(model_meta['model_version'])
+            logging.info('Unloading previous models')
+            for m in previous_models.keys():
+                logging.info(f'Unloading model {m}')
+                edge_agent.unload_model(m)
+                self.models_loaded = [x in self.models_loaded if x['identifier'] != m]
+
+    def unload_all(self):
+        for m in self.models_loaded:
+            logging.info("Unloading model %s" % m)
+            edge_agent.unload_model(m['identifier'])
+
+    def dispose(self):
+        self.t.stop()
+        del self.t
+        del self.e
+
+model_monitor = ModelMonitor(os.environ.get('MODEL_PATH','/greengrass/v2/work/aws.example.model.defect_detection'))
 
 @flask_app.route('/')
 def homepage():
@@ -215,59 +229,65 @@ def homepage():
 
     if len(list_img_inf) == 0:
         return render_template('main_noimg.html',
-            loaded_models=models_loaded
+            loaded_models=model_monitor.models_loaded
         )
 
     inference_img_path = random.choice(list_img_inf)
     inference_img_filename = re.search(r'(?<=\/static\/).+$', inference_img_path)[0]
 
-    # Run inferece on this image
-    y_clf, t_ms_clf = run_classification_inference(edge_agent, inference_img_path)
-    y_segm, t_ms_segm = run_segmentation_inference(edge_agent, inference_img_path)
+    try:
+        # Run inferece on this image
+        y_clf, t_ms_clf = run_classification_inference(edge_agent, inference_img_path)
+        y_segm, t_ms_segm = run_segmentation_inference(edge_agent, inference_img_path)
 
 
-    # Synthesize mask into binary image
-    if y_segm is not None:
-        segm_img_encoded = app.create_b64_img_from_mask(y_segm)
-        segm_img_decoded_utf8 = segm_img_encoded.decode('utf-8')
-        logging.info('Model latency: t_clf=%fms, t_segm=%fms' % (t_ms_clf, t_ms_segm))
-    else:
-        segm_img_encoded = None
-        segm_img_decoded_utf8 = None
+        # Synthesize mask into binary image
+        if y_segm is not None:
+            segm_img_encoded = app.create_b64_img_from_mask(y_segm)
+            segm_img_decoded_utf8 = segm_img_encoded.decode('utf-8')
+            logging.info('Model latency: t_clf=%fms, t_segm=%fms' % (t_ms_clf, t_ms_segm))
+        else:
+            segm_img_encoded = None
+            segm_img_decoded_utf8 = None
 
-    # Extract predictions from the y array
-    # Assuming that the entry at index=0 is the probability for "normal" and the other for "anomalous"
-    clf_class_labels = ['normal', 'anomalous']
-    if y_clf is not None:
-        y_clf_normal = np.round(y_clf[0], decimals=6)
-        y_clf_anomalous = np.round(y_clf[1], decimals=6)
-        y_clf_class = clf_class_labels[np.argmax(y_clf)]
-        logging.info('Model latency: t_classification=%fms' % t_ms_clf)
-    else:
-        y_clf_normal = None
-        y_clf_anomalous = None
-        y_clf_class = None
+        # Extract predictions from the y array
+        # Assuming that the entry at index=0 is the probability for "normal" and the other for "anomalous"
+        clf_class_labels = ['normal', 'anomalous']
+        if y_clf is not None:
+            y_clf_normal = np.round(y_clf[0], decimals=6)
+            y_clf_anomalous = np.round(y_clf[1], decimals=6)
+            y_clf_class = clf_class_labels[np.argmax(y_clf)]
+            logging.info('Model latency: t_classification=%fms' % t_ms_clf)
+        else:
+            y_clf_normal = None
+            y_clf_anomalous = None
+            y_clf_class = None
 
-    logger.publish_logs(json.dumps({'classification': { "normal": str(y_clf_normal), "anomalous": str(y_clf_anomalous), "class": str(y_clf_class), "ms":str(t_ms_clf) }}))
-    # Return rendered HTML page with predictions
-    return render_template('main.html',
-        loaded_models=models_loaded,
-        image_file=inference_img_filename,
-        y_clf_normal=y_clf_normal,
-        y_clf_anomalous=y_clf_anomalous,
-        y_clf_class=y_clf_class,
-        y_segm_img=segm_img_decoded_utf8,
-        latency_clf=t_ms_clf,
-        latency_segm=t_ms_segm
+        logger.publish_logs(json.dumps({'classification': { "normal": str(y_clf_normal), "anomalous": str(y_clf_anomalous), "class": str(y_clf_class), "ms":str(t_ms_clf) }}))
+        return render_template('main.html',
+            loaded_models=model_monitor.models_loaded,
+            image_file=inference_img_filename,
+            y_clf_normal=y_clf_normal,
+            y_clf_anomalous=y_clf_anomalous,
+            y_clf_class=y_clf_class,
+            y_segm_img=segm_img_decoded_utf8,
+            latency_clf=t_ms_clf,
+            latency_segm=t_ms_segm
     )
+    except Exception as e:
+        logging.warn(e)
+        return render_template('main.html', loaded_models=model_monitor.models_loaded,
+            image_file=inference_img_filename)
+    # Return rendered HTML page with predictions
+    
 
 
 if __name__ == '__main__':
     try:
         if SM_APP_ENV == 'prod':
-            serve(flask_app, host='0.0.0.0', port=8080)
+            serve(flask_app, host='0.0.0.0', port=8081)
         elif SM_APP_ENV == 'dev':
-            flask_app.run(debug=False, use_reloader=False, host='0.0.0.0', port=8080)
+            flask_app.run(debug=False, use_reloader=False, host='0.0.0.0', port=8081)
         else:
             raise Exception('SM_APP_ENV needs to be either "prod" or "dev"')
 
@@ -278,17 +298,15 @@ if __name__ == '__main__':
 
     logging.info('Shutting down')
 
-    for m in models_loaded:
-        logging.info("Unloading model %s" % m)
-        edge_agent.unload_model(m['identifier'])
+    model_monitor.unload_all()
 
 
     # Updating config file
-    config['models'] = models_loaded
+    config['models'] = model_monitor.models_loaded
 
     with open(CONFIG_FILE_PATH, 'w') as f:
         json.dump(config, f)
 
-    del model_manager
     del edge_agent
+    del model_monitor
     del logger

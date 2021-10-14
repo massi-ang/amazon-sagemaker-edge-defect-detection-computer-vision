@@ -1,0 +1,16 @@
+RecipeFormatVersion: 2020-01-25
+ComponentName: aws.example.defect_detect.venv
+ComponentVersion: 1.0.0
+ComponentDescription: ""
+ComponentPublisher: Amazon Web Services
+ComponentDependencies: {}
+Manifests:
+  - Platform:
+      os: /linux/
+      architecture: /aarch64/
+    Lifecycle:
+      Install: |-
+        python3 -m venv venv
+        . venv/bin/activate
+        pip install pip --upgrade
+        pip install boto3 Pillow protobuf grpcio numpy waitress flask requests

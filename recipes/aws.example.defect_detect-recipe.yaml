@@ -1,0 +1,36 @@
+RecipeFormatVersion: 2020-01-25
+ComponentName: aws.example.defect_detect
+ComponentVersion: 1.0.0
+ComponentDescription: ""
+ComponentPublisher: Amazon Web Services
+ComponentDependencies:
+  aws.example.model.defect_detection:
+    VersionRequirement: ">0.0.0"
+    DependencyType: SOFT
+  aws.example.defect_detect.venv:
+    VersionRequirement: ">0.0.0"
+    DependencyType: HARD
+ComponentConfiguration:
+  DefaultConfiguration:
+    AWS_IOT_ENDPOINT: ''
+Manifests:
+  - Platform:
+      os: /linux/
+      architecture: aarch64
+    Lifecycle:
+      Install: |-
+        rm -rf *
+        cp -r {artifacts:decompressedPath}/app/static .
+        cp {artifacts:decompressedPath}/app/models_config.json .
+        chmod +w -R *
+      Run:
+        Setenv:
+          AWS_IOT_ENDPOINT: "{configuration:/AWS_IOT_ENDPOINT}"
+          MODEL_PATH: "{aws.example.model.defect_detection:work:path}"
+        Script: |-
+          . {aws.example.defect_detect.venv:work:path}/venv/bin/activate
+          export OPENBLAS_CORETYPE=ARMV8
+          python3 -u {artifacts:decompressedPath}/app/run.py
+    Artifacts:
+      - Uri: s3://_BUCKET_/aws.example.defect_detect/1.0.0/app.zip
+        Unarchive: ZIP
