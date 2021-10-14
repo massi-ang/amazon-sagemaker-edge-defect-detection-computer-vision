@@ -29,22 +29,6 @@ SPDX-License-Identifier: MIT-0 -->
   </div>
 
   <div class="card my-3">
-    <div class="card-header">Camera Stream</div>
-    <div class="card-body">
-      <div>Filename: {{ image_file }}</div>
-      <div class="my-3">
-        <img
-          src="{{url_for('static', filename=image_file)}}"
-          class="img-fluid"
-          height="300"
-          width="300"
-          alt="..."
-        />
-      </div>
-    </div>
-  </div>
-
-  <div class="card my-3">
     <div class="card-header">Model Predictions</div>
     <div class="card-body">
       <div class="my-2">
@@ -95,5 +79,23 @@ SPDX-License-Identifier: MIT-0 -->
       </div>
     </div>
   </div>
+
+  <div class="card my-3">
+    <div class="card-header">Camera Stream</div>
+    <div class="card-body">
+      <div>Filename: {{ image_file }}</div>
+      <div class="my-3">
+        <img
+          src="{{url_for('static', filename=image_file)}}"
+          class="img-fluid"
+          height="300"
+          width="300"
+          alt="..."
+        />
+      </div>
+    </div>
+  </div>
+
+  
 </div>
 {% endblock %}
