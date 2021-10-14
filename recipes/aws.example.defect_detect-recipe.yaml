@@ -12,7 +12,8 @@ ComponentDependencies:
     DependencyType: HARD
 ComponentConfiguration:
   DefaultConfiguration:
-    AWS_IOT_ENDPOINT: ''
+    AWS_IOT_ENDPOINT: ""
+    LOG_BATCH_SIZE: "1"
 Manifests:
   - Platform:
       os: /linux/
@@ -27,6 +28,7 @@ Manifests:
         Setenv:
           AWS_IOT_ENDPOINT: "{configuration:/AWS_IOT_ENDPOINT}"
           MODEL_PATH: "{aws.example.model.defect_detection:work:path}"
+          LOG_BATCH_SIZE: "{configuration:/LOG_BATCH_SIZE}"
         Script: |-
           . {aws.example.defect_detect.venv:work:path}/venv/bin/activate
           export OPENBLAS_CORETYPE=ARMV8

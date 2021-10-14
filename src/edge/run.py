@@ -38,7 +38,7 @@ with open(CONFIG_FILE_PATH, 'r') as f:
     config = json.load(f)
 
 # Send logs to cloud via MQTT topics
-logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT', 'https://acwprzq1nws9h-ats.iot.eu-west-1.amazonaws.com' ), 1)
+logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT', 'https://acwprzq1nws9h-ats.iot.eu-west-1.amazonaws.com' ), int(os.environ.get('LOG_BATCH_SIZE', '1')))
 
 # Initialize the Edge Manager agent
 edge_agent = app.EdgeAgentClient(AGENT_SOCKET)
@@ -138,7 +138,7 @@ def run_classification_inference(agent, filename):
         return None, None
     model_id_img_clf = model_dict_img_clf['identifier']
 
-    logging.info('\nClassification inference with %s' % filename)
+    logging.info(f'Classification inference for {filename} with model {model_id_img_clf}')
     image = PIL.Image.open(filename)
     image = image.convert(mode='RGB')
 
@@ -146,6 +146,7 @@ def run_classification_inference(agent, filename):
     x_batchified = preprocess_image(image, IMG_WIDTH, IMG_HEIGHT)
 
     # Run inference with agent and time taken
+    
     t_start = timer()
     y = agent.predict(model_id_img_clf, x_batchified)
     t_stop = timer()
@@ -172,6 +173,7 @@ class ModelMonitor(object):
         self.m.start()
         self.current_version = 0
         self.models_loaded=[]
+        self.loading_model = False
 
     def get_model_meta(self):
         with open(os.path.join(self.path, 'sagemaker_edge_manifest')) as f:
@@ -186,6 +188,7 @@ class ModelMonitor(object):
             time.sleep(1)
     
     def load_model(self):
+        self.loading_model = True
         logging.info('New model version detected. Loading...')
 
         model_meta = self.get_model_meta()
@@ -194,7 +197,7 @@ class ModelMonitor(object):
         """Loads the model into the edge agent and unloads previous versions if any."""
         # Create a model name string as a concatenation of name and version
         identifier = "%s-%s" % (model_meta['model_name'], model_meta['model_version'])
-        previous_models = edge_agent.unload_model(identifier)
+        previous_models = edge_agent.update_models_list()
         resp = edge_agent.load_model(identifier, self.path)
         
         if resp is None:
@@ -209,6 +212,7 @@ class ModelMonitor(object):
                 logging.info(f'Unloading model {m}')
                 edge_agent.unload_model(m)
                 self.models_loaded = [x for x in self.models_loaded if x['identifier'] != m ]
+        self.loading_model = False
 
     def unload_all(self):
         for m in self.models_loaded:
@@ -224,6 +228,7 @@ model_monitor = ModelMonitor(os.environ.get('MODEL_PATH','/greengrass/v2/work/aw
 
 @flask_app.route('/')
 def homepage():
+    global model_monitor
     # Get a random image from the directory
     list_img_inf = glob.glob(os.path.join(IMAGE_FOLDER,'**/*.png'))
 
@@ -235,49 +240,50 @@ def homepage():
     inference_img_path = random.choice(list_img_inf)
     inference_img_filename = re.search(r'(?<=\/static\/).+$', inference_img_path)[0]
 
-    try:
-        # Run inferece on this image
-        y_clf, t_ms_clf = run_classification_inference(edge_agent, inference_img_path)
-        y_segm, t_ms_segm = run_segmentation_inference(edge_agent, inference_img_path)
+    if not model_monitor.loading_model :
+        try:
+            # Run inferece on this image
+            y_clf, t_ms_clf = run_classification_inference(edge_agent, inference_img_path)
+            y_segm, t_ms_segm = run_segmentation_inference(edge_agent, inference_img_path)
 
 
-        # Synthesize mask into binary image
-        if y_segm is not None:
-            segm_img_encoded = app.create_b64_img_from_mask(y_segm)
-            segm_img_decoded_utf8 = segm_img_encoded.decode('utf-8')
-            logging.info('Model latency: t_clf=%fms, t_segm=%fms' % (t_ms_clf, t_ms_segm))
-        else:
-            segm_img_encoded = None
-            segm_img_decoded_utf8 = None
+            # Synthesize mask into binary image
+            if y_segm is not None:
+                segm_img_encoded = app.create_b64_img_from_mask(y_segm)
+                segm_img_decoded_utf8 = segm_img_encoded.decode('utf-8')
+                logging.info('Model latency: t_clf=%fms, t_segm=%fms' % (t_ms_clf, t_ms_segm))
+            else:
+                segm_img_encoded = None
+                segm_img_decoded_utf8 = None
 
-        # Extract predictions from the y array
-        # Assuming that the entry at index=0 is the probability for "normal" and the other for "anomalous"
-        clf_class_labels = ['normal', 'anomalous']
-        if y_clf is not None:
-            y_clf_normal = np.round(y_clf[0], decimals=6)
-            y_clf_anomalous = np.round(y_clf[1], decimals=6)
-            y_clf_class = clf_class_labels[np.argmax(y_clf)]
-            logging.info('Model latency: t_classification=%fms' % t_ms_clf)
-        else:
-            y_clf_normal = None
-            y_clf_anomalous = None
-            y_clf_class = None
+            # Extract predictions from the y array
+            # Assuming that the entry at index=0 is the probability for "normal" and the other for "anomalous"
+            clf_class_labels = ['normal', 'anomalous']
+            if y_clf is not None:
+                y_clf_normal = np.round(y_clf[0], decimals=6)
+                y_clf_anomalous = np.round(y_clf[1], decimals=6)
+                y_clf_class = clf_class_labels[np.argmax(y_clf)]
+                logging.info('Model latency: t_classification=%fms' % t_ms_clf)
+            else:
+                y_clf_normal = None
+                y_clf_anomalous = None
+                y_clf_class = None
 
-        logger.publish_logs(json.dumps({'classification': { "normal": str(y_clf_normal), "anomalous": str(y_clf_anomalous), "class": str(y_clf_class), "ms":str(t_ms_clf) }}))
-        return render_template('main.html',
-            loaded_models=model_monitor.models_loaded,
-            image_file=inference_img_filename,
-            y_clf_normal=y_clf_normal,
-            y_clf_anomalous=y_clf_anomalous,
-            y_clf_class=y_clf_class,
-            y_segm_img=segm_img_decoded_utf8,
-            latency_clf=t_ms_clf,
-            latency_segm=t_ms_segm
-    )
-    except Exception as e:
-        logging.warn(e)
-        return render_template('main.html', loaded_models=model_monitor.models_loaded,
-            image_file=inference_img_filename)
+            logger.publish_logs(json.dumps({'classification': { "normal": str(y_clf_normal), "anomalous": str(y_clf_anomalous), "class": str(y_clf_class), "ms":str(t_ms_clf) }}))
+            return render_template('main.html',
+                loaded_models=model_monitor.models_loaded,
+                image_file=inference_img_filename,
+                y_clf_normal=y_clf_normal,
+                y_clf_anomalous=y_clf_anomalous,
+                y_clf_class=y_clf_class,
+                y_segm_img=segm_img_decoded_utf8,
+                latency_clf=t_ms_clf,
+                latency_segm=t_ms_segm
+        )
+        except Exception as e:
+            logging.warn(e)
+            return render_template('main.html', loaded_models=model_monitor.models_loaded,
+                image_file=inference_img_filename)
     # Return rendered HTML page with predictions
     
 

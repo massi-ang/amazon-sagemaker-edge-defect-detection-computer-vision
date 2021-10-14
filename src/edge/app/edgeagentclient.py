@@ -28,7 +28,7 @@ class EdgeAgentClient(object):
         self.agent = agent_grpc.AgentStub(self.channel)
         self.model_map = {}
 
-    def __update_models_list__(self):
+    def update_models_list(self):
         models_list = self.agent.ListModels(agent.ListModelsRequest())
         self.model_map = {m.name:{'in': m.input_tensor_metadatas, 'out': m.output_tensor_metadatas} for m in models_list.models}
         return self.model_map
@@ -108,7 +108,7 @@ class EdgeAgentClient(object):
             req.name = model_name
             resp = self.agent.LoadModel(req)
 
-            return self.__update_models_list__()
+            return self.update_models_list()
         except Exception as e:
             logging.error('Error in load_model: %s' % e)
             return None
@@ -120,7 +120,7 @@ class EdgeAgentClient(object):
             req.name = model_name
             resp = self.agent.UnLoadModel(req)
 
-            return self.__update_models_list__()
+            return self.update_models_list()
         except Exception as e:
             logging.error('Error in unload_model: %s' % e)
-            return self.__update_models_list__()
+            return self.update_models_list()
