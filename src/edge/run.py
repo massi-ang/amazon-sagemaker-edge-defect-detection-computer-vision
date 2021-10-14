@@ -66,7 +66,7 @@ def get_square_image(img):
         return img
     elif width > height:
         result = PIL.Image.new(img.mode, (width, width), padding_color)
-        result.paste(pil_img, (0, (width - height) // 2))
+        result.paste(img, (0, (width - height) // 2))
         return result
     else:
         result = PIL.Image.new(img.mode, (height, height), padding_color)
@@ -188,7 +188,7 @@ class ModelMonitor(object):
             time.sleep(1)
     
     def load_model(self):
-        self.loading_model = True
+        
         logging.info('New model version detected. Loading...')
 
         model_meta = self.get_model_meta()
@@ -197,21 +197,30 @@ class ModelMonitor(object):
         """Loads the model into the edge agent and unloads previous versions if any."""
         # Create a model name string as a concatenation of name and version
         identifier = "%s-%s" % (model_meta['model_name'], model_meta['model_version'])
-        previous_models = edge_agent.update_models_list()
+        current_models = edge_agent.update_models_list()
+        if identifier in current_models:
+            logging.warn(f'Model already loaded - skipping')
+            self.current_version = int(model_meta['model_version'])
+            if len([x for x in self.models_loaded if x['identifier'] == identifier]) == 0:
+                self.models_loaded.append({'name':model_meta['model_name'], 'version':model_meta['model_version'], 'identifier':identifier})
+            return
+
+        self.loading_model = True
+        for m in current_models.keys():
+            logging.info(f'Unloading model {m}')
+            
+            edge_agent.unload_model(m)
+            self.models_loaded = [x for x in self.models_loaded if x['identifier'] != m ]
+
         resp = edge_agent.load_model(identifier, self.path)
         
         if resp is None:
             logging.error('It was not possible to load the model. Is the agent running?')
-            return
         else:
-            logging.info('Sucessfully loaded new model version into agent')
+            logging.info(f'Successfully loaded new model version into agent {model_meta}')
             self.models_loaded.append({'name':model_meta['model_name'], 'version':model_meta['model_version'], 'identifier':identifier})
             self.current_version = int(model_meta['model_version'])
-            logging.info('Unloading previous models')
-            for m in previous_models.keys():
-                logging.info(f'Unloading model {m}')
-                edge_agent.unload_model(m)
-                self.models_loaded = [x for x in self.models_loaded if x['identifier'] != m ]
+
         self.loading_model = False
 
     def unload_all(self):
@@ -282,8 +291,8 @@ def homepage():
         )
         except Exception as e:
             logging.warn(e)
-            return render_template('main.html', loaded_models=model_monitor.models_loaded,
-                image_file=inference_img_filename)
+    return render_template('main.html', loaded_models=model_monitor.models_loaded,
+        image_file=inference_img_filename)
     # Return rendered HTML page with predictions
     
 
