@@ -21,7 +21,7 @@ def create_dataset(X, time_steps=1, step=1):
 def get_client(service_name, iot_params):
     
     return boto3.client(
-        service_name, iot_params,
+        service_name, endpoint_url=iot_params
     )
 
 def create_b64_img_from_mask(mask):

@@ -13,26 +13,18 @@ from timeit import default_timer as timer
 from flask import Flask
 from flask import render_template
 from waitress import serve
+
 flask_app = Flask(__name__)
 
 import app
 
-# Get environment variables
-if not 'SM_EDGE_AGENT_HOME' in os.environ:
-    logging.error('You need to define the environment variable SM_EDGE_AGENT_HOME')
-    raise Exception('Environment variable not defined')
-
-if not 'SM_APP_ENV' in os.environ:
-    logging.error('You need to define the environment variable SM_APP_ENV as either "prod" or "dev"')
-    raise Exception('Environment variable not defined')
-
 # Configuration constants
-SM_EDGE_AGENT_HOME = os.environ['SM_EDGE_AGENT_HOME']
+#SM_EDGE_AGENT_HOME = os.environ['SM_EDGE_AGENT_HOME']
 AGENT_SOCKET = os.environ.get('SM_AGENT_SOCKET', '/tmp/aws.greengrass.SageMakerEdgeManager.sock')
-SM_EDGE_MODEL_PATH = os.path.join(SM_EDGE_AGENT_HOME, 'model/dev')
-SM_EDGE_CONFIGFILE_PATH = os.path.join(SM_EDGE_AGENT_HOME, 'conf/config_edge_device.json')
+SM_EDGE_MODEL_PATH = os.environ.get('MODEL_PATH','model/dev')
+IMAGE_FOLDER = os.environ.get('IMAGE_FOLDER', './static')
 CONFIG_FILE_PATH = './models_config.json'
-SM_APP_ENV = os.environ['SM_APP_ENV']
+SM_APP_ENV = os.environ.get('SM_APP_ENV', 'dev')
 IMG_WIDTH = 224
 IMG_HEIGHT = 224
 
@@ -41,8 +33,8 @@ logging.basicConfig(level=logging.INFO)
 logging.debug('Initializing...')
 
 # Loading config file
-# with open(CONFIG_FILE_PATH, 'r') as f:
-#     config = json.load(f)
+with open(CONFIG_FILE_PATH, 'r') as f:
+    config = json.load(f)
 
 # Load SM Edge Agent config file
 #iot_params = json.loads(open(SM_EDGE_CONFIGFILE_PATH, 'r').read())
@@ -59,7 +51,7 @@ logging.debug('Initializing...')
 # mqtt_port=8883
 
 # Send logs to cloud via MQTT topics
-logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT'))
+logger = app.Logger(os.environ['AWS_IOT_THING_NAME'], os.environ.get('AWS_IOT_ENDPOINT', 'https://acwprzq1nws9h-ats.iot.eu-west-1.amazonaws.com' ), 1)
 
 # Initialize the Edge Manager agent
 edge_agent = app.EdgeAgentClient(AGENT_SOCKET)
@@ -106,36 +98,31 @@ def preprocess_image(img, img_width, img_height):
     return x_batchified
 
 # Setup model callback method
-def load_model(name, version):
+def load_model(path):
+    with open(os.path.join(path, 'sagemaker_edge_manifest')) as f:
+        model_meta = json.loads(f.read())['metadata']
+    
+    logging.info(f'Loading model {model_meta}')
     """Loads the model into the edge agent and unloads previous versions if any."""
-    global models_loaded
-    version = str(version)
     # Create a model name string as a concatenation of name and version
-    identifier = "%s-%s" % (name, version.replace('.', '-'))
-
-    # Check if previous version of this model was loaded already and unload it
-    matching_model_dict = next((m for m in models_loaded if m['name'] == name), None)
-    if matching_model_dict:
-        logging.info('Previous version of new model found: %s' % matching_model_dict)
-
-       # Check if version is higher
-        if float(version) <= float(matching_model_dict['version']):
-            logging.info('New model version is not higher than previous version. Not loading incoming model.')
-            return
-
-    logging.info('Loading model into edge agent: %s' % identifier)
-    resp = edge_agent.load_model(identifier, os.path.join(SM_EDGE_MODEL_PATH, name, version))
+    identifier = "%s-%s" % (model_meta['model_name'], model_meta['model_version'])
+    previous_models = edge_agent.unload_model(identifier)
+    
+   
+    resp = edge_agent.load_model(identifier, path)
+    
     if resp is None:
         logging.error('It was not possible to load the model. Is the agent running?')
         return
     else:
-        models_loaded.append({'name': name, 'version': version, 'identifier': identifier})
         logging.info('Sucessfully loaded new model version into agent')
-        if matching_model_dict:
-            logging.info('Unloading previous model version')
-            edge_agent.unload_model(matching_model_dict['identifier'])
-            models_loaded.remove(matching_model_dict)
-
+        models_loaded.append({'name':model_meta['model_name'], 'version':model_meta['model_version'], 'identifier':identifier})
+        logging.info('Unloading previous models')
+        for m in previous_models.keys():
+            logging.info(f'Unloading model {m}')
+            edge_agent.unload_model(m)
+            
+       
 def run_segmentation_inference(agent, filename):
     """Runs inference on the given image file. Returns prediction and model latency."""
 
@@ -219,13 +206,12 @@ def run_classification_inference(agent, filename):
 # Get list of supported model names
 models_supported = config['mappings'].values()
 
-# Initialize OTA model manager
-model_manager = app.OTAModelUpdate(device_name, iot_params, mqtt_host, mqtt_port, load_model, SM_EDGE_MODEL_PATH, models_supported)
+load_model('/greengrass/v2/work/aws.example.model.defect_detection')
 
 @flask_app.route('/')
 def homepage():
     # Get a random image from the directory
-    list_img_inf = glob.glob('./static/**/*.png')
+    list_img_inf = glob.glob(os.path.join(IMAGE_FOLDER,'**/*.png'))
 
     if len(list_img_inf) == 0:
         return render_template('main_noimg.html',
@@ -238,6 +224,7 @@ def homepage():
     # Run inferece on this image
     y_clf, t_ms_clf = run_classification_inference(edge_agent, inference_img_path)
     y_segm, t_ms_segm = run_segmentation_inference(edge_agent, inference_img_path)
+
 
     # Synthesize mask into binary image
     if y_segm is not None:
@@ -261,7 +248,7 @@ def homepage():
         y_clf_anomalous = None
         y_clf_class = None
 
-
+    logger.publish_logs(json.dumps({'classification': { "normal": str(y_clf_normal), "anomalous": str(y_clf_anomalous), "class": str(y_clf_class), "ms":str(t_ms_clf) }}))
     # Return rendered HTML page with predictions
     return render_template('main.html',
         loaded_models=models_loaded,
@@ -273,17 +260,6 @@ def homepage():
         latency_clf=t_ms_clf,
         latency_segm=t_ms_segm
     )
-
-# INIT APP
-# Initially load models as defined in config file
-for model_config in config['models']:
-    model_name = model_config['name']
-    model_version = model_config['version']
-    try:
-        load_model(model_name, model_version)
-    except Exception as e:
-        logging.error('Model could not be loaded. Did you specify it properly in the config file?')
-        raise e
 
 
 if __name__ == '__main__':
